@@ -96,7 +96,7 @@ pub mod coin_flip {
 
         msg!("random data: {:?}", revealed_random_value);
 
-         // Generate dice roll from random bytes (0-127)
+        // Generate dice roll from random bytes (0-100)
         let dice_roll = generate_dice_roll(&revealed_random_value);
         msg!("Dice roll: {}", dice_roll);
 

@@ -5,7 +5,7 @@ pub enum ErrorCode {
     #[msg("Unauthorized access attempt")]
     Unauthorized,
 
-    #[msg("Invalid guess value. Must be 0-127")]
+    #[msg("Invalid guess value. Must be 0-100")]
     InvalidGuess,
 
     #[msg("Invalid bet amount. Must be greater than 0")]

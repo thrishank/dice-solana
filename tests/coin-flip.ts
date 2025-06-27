@@ -148,12 +148,46 @@ describe("coin-flip", () => {
     await connection.simulateTransaction(revealTx);
     const sig5 = await connection.sendTransaction(revealTx);
     await connection.confirmTransaction(sig5);
-    console.log("  Transaction Signature revealTx", sig5);
+    console.log("Transaction Signature revealTx", sig5);
 
-    const answer = await connection.getParsedTransaction(sig5, {
+    const txlogs = await connection.getParsedTransaction(sig5, {
       maxSupportedTransactionVersion: 0,
     });
 
-    console.log("Answer: ", answer?.meta?.logMessages);
+    console.log(txlogs?.meta?.logMessages);
+  });
+
+  it("invalid guess", async () => {
+    const { keypair } = testContext;
+    try {
+      await myProgram.methods
+        .diceRoll(new BN(12321), 200, new BN(0.1 * LAMPORTS_PER_SOL), {
+          over: {},
+        })
+        .accounts({
+          user: keypair.publicKey,
+          randomnessAccountData: rngKp.publicKey,
+        })
+        .rpc();
+    } catch (error) {
+      assert(error.errorLogs[0].includes("InvalidGuess"));
+    }
+  });
+
+  it("invalid bet amount", async () => {
+    const { keypair } = testContext;
+    try {
+      await myProgram.methods
+        .diceRoll(new BN(12321), 20, new BN(10 * LAMPORTS_PER_SOL), {
+          over: {},
+        })
+        .accounts({
+          user: keypair.publicKey,
+          randomnessAccountData: rngKp.publicKey,
+        })
+        .rpc();
+    } catch (error) {
+      assert(error.errorLogs[0].includes("BetOutOfRange"));
+    }
   });
 });
