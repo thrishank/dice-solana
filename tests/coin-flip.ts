@@ -14,9 +14,9 @@ describe("coin-flip", () => {
 
   const rngKp = Keypair.generate();
 
-  console.clear();
-
   it("init tressay", async () => {
+    console.clear();
+
     const { keypair } = await sb.AnchorUtils.loadEnv();
 
     const [address, bump] = PublicKey.findProgramAddressSync(
@@ -97,7 +97,7 @@ describe("coin-flip", () => {
     const commitIx = await randomness.commitIx(queue);
 
     const coinFlipIx = await myProgram.methods
-      .coinFlip(new BN(id), 50, new BN(0.1 * LAMPORTS_PER_SOL))
+      .diceRoll(new BN(id), 50, new BN(0.1 * LAMPORTS_PER_SOL), { over: {} })
       .accounts({
         user: keypair.publicKey,
         randomnessAccountData: rngKp.publicKey,

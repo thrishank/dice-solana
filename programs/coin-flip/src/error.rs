@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+
 #[error_code]
 pub enum ErrorCode {
     #[msg("Unauthorized access attempt")]
@@ -42,4 +43,6 @@ pub enum ErrorCode {
 
     #[msg("Insufficient treasury funds to pay winner")]
     InsufficientTreasuryFunds,
+
+    MathOverflow,
 }

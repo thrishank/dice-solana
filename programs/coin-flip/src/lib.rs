@@ -3,16 +3,22 @@ use anchor_lang::system_program;
 use switchboard_on_demand::accounts::RandomnessAccountData;
 
 mod error;
+mod state;
+
+use crate::state::PlayerState;
+use crate::state::Treasury;
+use crate::{state::BetType};
 
 declare_id!("8bAReNo1WM2oRuRucz3cUfzs6B3j6oVL4S22QQ8WdN3m");
 
 #[program]
 pub mod coin_flip {
+
     use super::*;
 
-    pub fn coin_flip(ctx: Context<CoinFlip>, _id: u64, guess: u8, bet: u64) -> Result<()> {
+    pub fn dice_roll(ctx: Context<DiceRoll>, _id: u64, guess: u8, bet: u64, bet_type: BetType) -> Result<()> {
         // Validate inputs
-        require!((2..98).contains(&guess), error::ErrorCode::InvalidGuess);
+        require!((2..=98).contains(&guess), error::ErrorCode::InvalidGuess);
 
         const MIN_BET: u64 = 1_000_000; // 0.001 SOL minimum
         const MAX_BET: u64 = 1_000_000_000; // 1 SOL maximum
@@ -29,6 +35,7 @@ pub mod coin_flip {
         player_state.bump = ctx.bumps.player_state;
         player_state.allowed_user = ctx.accounts.user.key();
         player_state.wager = bet;
+        player_state.bet_type = bet_type;
 
         // Parse and validate randomness data
         let randomness_data =
@@ -54,8 +61,9 @@ pub mod coin_flip {
 
         system_program::transfer(trasfer_sol_cpi, bet)?;
         msg!(
-            "dice roll initiated, Guess: {}, bet: {} lamports",
+            "Dice roll initiated, Guess: {}, Bet Type: {:?}, Bet: {} lamports",
             guess,
+            bet_type,
             bet
         );
         Ok(())
@@ -93,12 +101,14 @@ pub mod coin_flip {
         msg!("Dice roll: {}", dice_roll);
 
         // Calculate if player won
-        let player_won = dice_roll > player_state.current_guess;
-        player_state.latest_flip_result = player_won;
+        let player_won = match player_state.bet_type {
+            BetType::Over => dice_roll > player_state.current_guess,
+            BetType::Under => dice_roll < player_state.current_guess,
+        }; 
         
         if player_won {
             // Calculate payout with house edge
-            let payout = calculate_payout(player_state.wager, player_state.current_guess)?;
+            let payout = calculate_payout(player_state.wager, player_state.current_guess, player_state.bet_type)?;
 
             let rent = Rent::get()?;
             let min_balance = rent.minimum_balance(ctx.accounts.treasury.to_account_info().data_len());
@@ -111,22 +121,22 @@ pub mod coin_flip {
                 return Err(error::ErrorCode::InsufficientTreasuryFunds.into());
             }
 
-            let seeds: &[&[u8]] = &[b"treasury", &[ctx.accounts.treasury.bump]];
-            let signer_seeds = &[seeds];
-
-            let transfer_cpi = CpiContext::new_with_signer(
-                ctx.accounts.system_program.to_account_info(),
-                system_program::Transfer {
-                    from: ctx.accounts.treasury.to_account_info(),
-                    to: ctx.accounts.user.to_account_info(),
-                },
-                signer_seeds,
+            **ctx.accounts.treasury.to_account_info().try_borrow_mut_lamports()? -= payout;
+            **ctx.accounts.user.to_account_info().try_borrow_mut_lamports()? += payout;
+            msg!(
+                "Player won! Dice roll: {}, Guess: {}, Bet type: {:?}, Payout: {} lamports", 
+                dice_roll, 
+                player_state.current_guess,
+                player_state.bet_type,
+                payout
             );
-
-            system_program::transfer(transfer_cpi, payout)?;
-            msg!("Player won! Payout: {} lamports", payout);
         } else {
-             msg!("Player lost. Dice roll: {}, Guess: {}", dice_roll, player_state.current_guess);
+            msg!(
+                "Player lost. Dice roll: {}, Guess: {}, Bet type: {:?}", 
+                dice_roll, 
+                player_state.current_guess,
+                player_state.bet_type
+            );
         }
 
         Ok(())
@@ -184,12 +194,12 @@ pub mod coin_flip {
 
 #[derive(Accounts)]
 #[instruction(_id: u64)]
-pub struct CoinFlip<'info> {
+pub struct DiceRoll<'info> {
     #[account(
         init,
         payer = user,
         seeds = [b"player_state".as_ref(), _id.to_le_bytes().as_ref(), user.key().as_ref()],
-        space = 8 + 100,
+        space = 8 + 120,
         bump
     )]
     pub player_state: Account<'info, PlayerState>,
@@ -213,7 +223,8 @@ pub struct SettleFlip<'info> {
 
     #[account(mut,
         seeds = [b"player_state".as_ref(), _id.to_le_bytes().as_ref(), user.key().as_ref()],
-        bump = player_state.bump
+        bump = player_state.bump,
+        close = user,
     )]
     pub player_state: Account<'info, PlayerState>,
 
@@ -224,13 +235,6 @@ pub struct SettleFlip<'info> {
     pub treasury: Account<'info, Treasury>,
 
     pub system_program: Program<'info, System>,
-}
-
-#[account]
-#[derive(InitSpace)]
-pub struct Treasury {
-    pub bump: u8,
-    pub owner: Pubkey,
 }
 
 #[derive(Accounts)]
@@ -265,18 +269,7 @@ pub struct Withdraw<'info> {
     pub system_program: Program<'info, System>,
 }
 
-#[account]
-pub struct PlayerState {
-    allowed_user: Pubkey,
-    latest_flip_result: bool,   // Stores the result of the latest flip
-    randomness_account: Pubkey, // Reference to the Switchboard randomness account
-    current_guess: u8,          // The current guess
-    wager: u64,                 // The wager amount
-    commit_slot: u64,           // The slot at which the randomness was committed
-    bump: u8,
-}
-
-fn generate_dice_roll(random_bytes: &[u8]) -> u8 {
+pub fn generate_dice_roll(random_bytes: &[u8]) -> u8 {
     // Use multiple bytes for better distribution
     let mut result: u32 = 0;
     for (i, &byte) in random_bytes.iter().take(4).enumerate() {
@@ -285,20 +278,42 @@ fn generate_dice_roll(random_bytes: &[u8]) -> u8 {
     // Map to 0-100 range
     (result % 101) as u8
 }
-fn calculate_payout(wager: u64, guess: u8) -> Result<u64> {
-    if guess < 2 || guess > 98 {
-        return Err(error::ErrorCode::InvalidGuess.into());
-    }
-    // Calculate multiplier based on probability
-    // Higher guess = lower probability = higher multiplier
-    let winning_outcomes = 100 - guess as u64;
-    let total_outcomes = 101u64;
+
+fn calculate_payout(wager: u64, guess: u8, bet_type: BetType) -> Result<u64> {
+    require!((2..=98).contains(&guess), error::ErrorCode::InvalidGuess);
+
+    // Calculate winning outcomes based on bet type
+    let winning_outcomes = match bet_type {
+        BetType::Over => 99 - guess as u64,  // Numbers greater than guess
+        BetType::Under => (guess - 1) as u64,      // Numbers less than guess
+    };
+
+    let total_outcomes = 99u64;
 
     // Multiplier with 5% house edge
-    let base_multiplier = (total_outcomes * 95) / (winning_outcomes * 100);
+    let precision: u64 = 1_000_000; // 6 decimal fixed-point
+    let house_edge: u64 = 950_000;  // 95% expressed as 950_000 / 1_000_000
 
-    // Ensure minimum multiplier
-    let multiplier = std::cmp::max(base_multiplier, 1);
+    // Safe math using u128 to prevent overflow during intermediate steps
+    let numerator = (total_outcomes as u128)
+        .checked_mul(house_edge as u128)
+        .ok_or(error::ErrorCode::MathOverflow)?;
 
-    Ok(wager.saturating_mul(multiplier))
+    let denominator = winning_outcomes as u128;
+
+    let multiplier_fp = numerator
+        .checked_div(denominator)
+        .ok_or(error::ErrorCode::MathOverflow)?;
+
+    // Minimum multiplier is 1x, scaled by precision
+    let multiplier_fp = std::cmp::max(multiplier_fp, precision as u128);
+    
+    // Final payout: wager * multiplier, adjusted by precision
+    let payout = (wager as u128)
+        .checked_mul(multiplier_fp)
+        .and_then(|v| v.checked_div(precision as u128))
+        .ok_or(error::ErrorCode::MathOverflow)?;
+
+    msg!("multiplier: {}", multiplier_fp);
+    Ok(payout as u64)
 }
